@@ -1,6 +1,8 @@
+from argparse import Namespace
 from copy import deepcopy
 import time
 import gym
+import wandb
 import numpy as np
 import torch as th
 from torch import nn
@@ -10,26 +12,26 @@ from actor_critic import MLPDeterministicActor, MLPQualityCritic
 from utils import Score
 
 
-class PendulumConfig:
-    ENV_NAME = "Pendulum-v0"
-    BATCH_SIZE = 64
-    MEMORY_SIZE = int(1e6)
-    EPOCHS = 20
-    STEPS_PER_EPOCH = 4000
-    UPDATE_EVERY = 200
-    NUM_UPDATES = 100
-    WARMUP_EPOCHS = 1
-    POLICY_DELAY = 2
-    HID_DIMS = [128,128]
-    ACTIV = nn.ReLU
-    LR = 0.001
-    GAMMA = 0.99
-    RHO = 0.99
+PendulumConfig = Namespace(
+    ENV_NAME = "Pendulum-v1",
+    BATCH_SIZE = 64,
+    MEMORY_SIZE = int(1e6),
+    EPOCHS = 10,
+    STEPS_PER_EPOCH = 4000,
+    UPDATE_EVERY = 200,
+    NUM_UPDATES = 100,
+    WARMUP_EPOCHS = 1,
+    POLICY_DELAY = 2,
+    HID_DIMS = [128,128],
+    ACTIV = nn.ReLU,
+    LR = 0.001,
+    GAMMA = 0.99,
+    RHO = 0.99,
 
-    SCORE_TO_BEAT = None
-    SCORE_SIZE = 100
+    SCORE_TO_BEAT = None,
+    SCORE_SIZE = 100,
 
-    TEST_EPISODES = 5
+    TEST_EPISODES = 5)
 
 
 
@@ -155,23 +157,26 @@ class TD3:
             tot_time += epoch_time
             tot_time_min, tot_time_sec = map(lambda x: str(round(x)).zfill(2), divmod(tot_time, 60))
             epoch_returns = np.array(epoch_returns)
+            stats = {
+                'Min Return': epoch_returns.min(),
+                'Avg Return': epoch_returns.mean(),
+                'Max Return': epoch_returns.max(),
+                'Std Return': epoch_returns.std()}
+            wandb.log(stats, step=epoch*config.STEPS_PER_EPOCH)
             print(
                 f"Epoch: {epoch:{epochs_digits}}/{config.EPOCHS} - "
                 f"Time: {epoch_time:4.1f}s/{tot_time_min}.{tot_time_sec}min - "
                 f"MinRet: {epoch_returns.min():8.2f} - AvgRet: {epoch_returns.mean():8.2f} - "
-                f"MaxRet: {epoch_returns.max():8.2f} - StdRet: {epoch_returns.std():8.2f}" 
-            )
+                f"MaxRet: {epoch_returns.max():8.2f} - StdRet: {epoch_returns.std():8.2f}" )
             if self.score.solved and not solved_flag:
                 solved_flag = True
                 print(
                     f"Environment solved in {self.score.episode-self.score.size} episodes with "
-                    f"{self.score.best:.2f} average return over {self.score.size} consecutive episodes"
-                )
+                    f"{self.score.best:.2f} average return over {self.score.size} consecutive episodes")
         
         print(
             f"Best score is {self.score.best:.2f} average return over "
-            f"{self.score.size} consecutive episodes after {self.score.episode} total episodes"
-        )
+            f"{self.score.size} consecutive episodes after {self.score.episode} total episodes")
 
 
 
@@ -179,12 +184,14 @@ class TD3:
         if not config.TEST_EPISODES: return
         print("============ TESTING ============")
         test_episodes_digits = 1 + int(np.log10(config.TEST_EPISODES))
+        frames = []
         for episode in range(1, 1+config.TEST_EPISODES):
             episode_ret, episode_len = 0, 0
             done = False
             obs = self.env.reset()
             while not done:
-                self.env.render()
+                frame = self.env.render(mode='rgb_array')
+                frames.append(frame)
                 with th.no_grad():
                     obs_tensor = th.tensor(obs.reshape(1,-1), dtype=th.float32)
                     act = self.actor(obs_tensor).squeeze(0)
@@ -194,13 +201,28 @@ class TD3:
             
             print(
                 f"Episode: {episode:{test_episodes_digits}}/{config.TEST_EPISODES} - "
-                f"Return: {episode_ret:8.2f} - Duration: {episode_len:4} steps"
-            )
+                f"Return: {episode_ret:8.2f} - Duration: {episode_len:4} steps")
+        
+        frames = np.stack(frames)
+        frames = np.transpose(frames, (0,3,1,2))
+        wandb.log({'test': wandb.Video(frames, fps=60, format='mp4')})
         self.env.close()
 
 
 
-if __name__ == '__main__':
+
+def main():
+    wandb.init(
+        project='deep-reinforcement-learning',
+        config=vars(config),
+        group=config.ENV_NAME,
+        tags=['TD3'])
+    
     learner = TD3()
     learner.train()
     learner.test()
+
+
+
+if __name__ == '__main__':
+    main()

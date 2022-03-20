@@ -1,5 +1,7 @@
+from argparse import Namespace
 import time
 import gym
+import wandb
 import numpy as np
 import torch as th
 from torch import nn
@@ -9,23 +11,22 @@ from actor_critic import MLPCategoricalActor, MLPValueCritic
 from utils import Score
 
 
+CartPoleConfig = Namespace(
+    ENV_NAME = 'CartPole-v0',
+    HID_DIMS = [64,64],
+    ACTIV = nn.Tanh,
+    EPOCHS = 20,
+    STEPS_PER_EPOCH = 4_000,
+    OPTIM_STEPS = 80,
+    GAMMA = 0.99,
+    LAMBDA = 0.98,
+    LR = 0.01,
 
-class CartPoleConfig:
-    ENV_NAME = 'CartPole-v0'
-    HID_DIMS = [64,64]
-    ACTIV = nn.Tanh
-    EPOCHS = 20
-    STEPS_PER_EPOCH = 4000
-    OPTIM_STEPS = 80
-    GAMMA = 0.99
-    LAMBDA = 0.98
-    LR = 0.01
+    SCORE_TO_BEAT = 196,
+    SCORE_SIZE = 100,
 
-    SCORE_TO_BEAT = 196
-    SCORE_SIZE = 100
-
-    TEST_EPISODES = 3
-    MAX_EPISODE_STEPS = 1000
+    TEST_EPISODES = 1,
+    MAX_EPISODE_STEPS = 1_000)
 
 
 config = CartPoleConfig
@@ -118,36 +119,42 @@ class VPG:
             tot_time_min, tot_time_sec = map(lambda s: str(round(s)).zfill(2), divmod(tot_time, 60))
 
             epoch_returns = np.array(epoch_returns)
+
+            stats = {
+                'Min Return': epoch_returns.min(),
+                'Avg Return': epoch_returns.mean(),
+                'Max Return': epoch_returns.max(),
+                'Std Return': epoch_returns.std()}
+            wandb.log(stats, step=epoch*config.STEPS_PER_EPOCH)
             print(
                 f"Epoch: {epoch+1:{epochs_num_digits}}/{config.EPOCHS} - "
                 f"Time: {epoch_time:2.1f}s/{tot_time_min}.{tot_time_sec}min - "
                 f"MinRet: {epoch_returns.min():8.2f} - AvgRet: {epoch_returns.mean():8.2f} - "
-                f"MaxRet: {epoch_returns.max():8.2f} - StdRet: {epoch_returns.std():8.2f}"
-            )
+                f"MaxRet: {epoch_returns.max():8.2f} - StdRet: {epoch_returns.std():8.2f}")
             if self.score.solved and not solved_flag:
                 solved_flag = True
                 print(
                     f"Environment solved in {self.score.episode-self.score.size} episodes with "
-                    f"{self.score.best:.2f} average return over {self.score.size} consecutive episodes"
-                )
+                    f"{self.score.best:.2f} average return over {self.score.size} consecutive episodes")
         
         if not solved_flag:
             print(
                 f"Best score is {self.score.best:.2f} average return over "
-                f"{self.score.size} consecutive episodes after {self.score.episode} total episodes"
-            )
+                f"{self.score.size} consecutive episodes after {self.score.episode} total episodes")
         
     
     def test(self):
         if not config.TEST_EPISODES: return
         print("============ TESTING ============")
         test_episodes_num_digits = 1 + int(np.log10(config.TEST_EPISODES))
+        frames = []
         for episode in range(1, 1+config.TEST_EPISODES):
             episode_ret, episode_len = 0, 0
             done = False
             obs = self.env.reset()
             while not done:
-                self.env.render()
+                frame = self.env.render(mode='rgb_array')
+                frames.append(frame)
                 with th.no_grad():
                     obs_tensor = th.tensor(obs.reshape(1,-1), dtype=th.float32)
                     policy = self.actor(obs_tensor)
@@ -158,13 +165,27 @@ class VPG:
             
             print(
                 f"Episode: {episode:{test_episodes_num_digits}}/{config.TEST_EPISODES} - "
-                f"Return: {episode_ret:8.2f} - Duration: {episode_len:4} steps"
-            )
+                f"Return: {episode_ret:8.2f} - Duration: {episode_len:4} steps")
         self.env.close()
+        
+        frames = np.stack(frames)
+        frames = np.transpose(frames, (0,3,1,2))
+        wandb.log({'test': wandb.Video(frames, fps=60, format='mp4')})
+
+
+
+def main():
+    wandb.init(
+        project='deep-reinforcement-learning',
+        config=vars(config),
+        group=config.ENV_NAME,
+        tags=['VPG'])
+
+    learner = VPG()
+    learner.train()
+    learner.test()
 
 
 
 if __name__ == '__main__':
-    learner = VPG()
-    learner.train()
-    learner.test()
+    main()
